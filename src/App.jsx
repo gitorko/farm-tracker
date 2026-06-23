@@ -10,11 +10,10 @@ function b64urlDecode(str) {
 }
 
 function getStoredToken() {
-  // In dev mode, skip auth entirely — you're the developer running locally
-  if (!import.meta.env.PROD) return 'dev';
   try {
     const token = localStorage.getItem(AUTH_KEY);
     if (!token) return null;
+    if (token === 'dev') return token; // dev session — no expiry check needed locally
     const [payload] = token.split('.');
     if (!payload) return null;
     const { exp } = JSON.parse(b64urlDecode(payload));
@@ -50,6 +49,17 @@ function LoginPage({ onLogin }) {
     setError('');
     setLoading(true);
     try {
+      if (!import.meta.env.PROD) {
+        // Dev mode: validate against VITE_AUTH_USER / VITE_AUTH_PASS in .env.local
+        if (username === import.meta.env.VITE_AUTH_USER && password === import.meta.env.VITE_AUTH_PASS) {
+          localStorage.setItem(AUTH_KEY, 'dev');
+          onLogin('dev');
+        } else {
+          setError('Invalid username or password');
+        }
+        setLoading(false);
+        return;
+      }
       const res = await fetch('/api/auth', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -82,7 +92,6 @@ function LoginPage({ onLogin }) {
             <input
               autoFocus autoComplete="username" value={username}
               onChange={e => setUsername(e.target.value)}
-              placeholder="admin"
               style={{ width: '100%', padding: '10px 14px', borderRadius: 10, border: '1.5px solid #e4e4e7', background: '#fff', color: '#111', fontSize: 15, fontFamily: 'inherit', outline: 'none' }}
             />
           </div>
@@ -92,7 +101,6 @@ function LoginPage({ onLogin }) {
               <input
                 type={showPwd ? 'text' : 'password'} autoComplete="current-password" value={password}
                 onChange={e => setPassword(e.target.value)}
-                placeholder="••••••••"
                 style={{ width: '100%', padding: '10px 44px 10px 14px', borderRadius: 10, border: '1.5px solid #e4e4e7', background: '#fff', color: '#111', fontSize: 15, fontFamily: 'inherit', outline: 'none' }}
               />
               <button type="button" onClick={() => setShowPwd(v => !v)}
@@ -888,26 +896,14 @@ function AuthenticatedApp({ onLogout }) {
           borderBottom: `1px solid ${T.border}`, marginBottom: 16,
         }}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12, gap: 8 }}>
-            <div style={{ minWidth: 0, display: 'flex', alignItems: 'center', gap: 10 }}>
-              <div>
-                <h1 style={{ fontSize: 20, fontWeight: 800, color: T.text, letterSpacing: -0.5, whiteSpace: 'nowrap' }}>
-                  🌾 Farm Tracker
-                </h1>
-                <p style={{ color: T.textSub, fontSize: 11, marginTop: 2 }}>Labour & Payment Manager</p>
-              </div>
-              <button
-                onClick={onLogout}
-                title="Sign out"
-                style={{
-                  background: 'transparent', border: `1.5px solid ${T.border}`, borderRadius: 8,
-                  padding: '5px 9px', cursor: 'pointer', fontSize: 14, color: T.textMuted,
-                  fontFamily: 'inherit', flexShrink: 0,
-                }}
-              >
-                🔓
-              </button>
+            <div style={{ minWidth: 0 }}>
+              <h1 style={{ fontSize: 20, fontWeight: 800, color: T.text, letterSpacing: -0.5, whiteSpace: 'nowrap' }}>
+                🌾 Farm Tracker
+              </h1>
+              <p style={{ color: T.textSub, fontSize: 11, marginTop: 2 }}>Labour & Payment Manager</p>
             </div>
-            {activePage === 'tracker' && (
+            <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexShrink: 0 }}>
+            {activePage === 'tracker' && (<>
               <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
                 <button
                   onClick={() => openAdd('work')}
@@ -940,7 +936,9 @@ function AuthenticatedApp({ onLogout }) {
                   + Paid
                 </button>
               </div>
-            )}
+            </>)}
+            <button onClick={onLogout} style={{ background: 'none', border: 'none', fontSize: 12, color: T.textMuted, cursor: 'pointer', fontFamily: 'inherit', padding: '4px 2px', fontWeight: 500, flexShrink: 0 }}>Sign out</button>
+            </div>
           </div>
 
           {/* Page tabs */}
