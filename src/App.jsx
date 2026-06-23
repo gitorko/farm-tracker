@@ -1,5 +1,117 @@
 import { useState, useEffect, useCallback } from 'react';
 
+// ─── AUTH ─────────────────────────────────────────────────────────────────────
+
+const AUTH_KEY = 'farm-tracker-auth';
+
+function b64urlDecode(str) {
+  const b64 = str.replace(/-/g, '+').replace(/_/g, '/');
+  return atob(b64 + '='.repeat((4 - b64.length % 4) % 4));
+}
+
+function getStoredToken() {
+  // In dev mode, skip auth entirely — you're the developer running locally
+  if (!import.meta.env.PROD) return 'dev';
+  try {
+    const token = localStorage.getItem(AUTH_KEY);
+    if (!token) return null;
+    const [payload] = token.split('.');
+    if (!payload) return null;
+    const { exp } = JSON.parse(b64urlDecode(payload));
+    if (!exp || exp < Date.now()) { localStorage.removeItem(AUTH_KEY); return null; }
+    return token;
+  } catch {
+    localStorage.removeItem(AUTH_KEY);
+    return null;
+  }
+}
+
+function authFetch(url, opts = {}) {
+  const token = localStorage.getItem(AUTH_KEY) || '';
+  return fetch(url, {
+    ...opts,
+    headers: { ...(opts.headers || {}), 'Authorization': `Bearer ${token}` },
+  }).then(r => {
+    if (r.status === 401) { localStorage.removeItem(AUTH_KEY); window.location.reload(); }
+    return r;
+  });
+}
+
+function LoginPage({ onLogin }) {
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [showPwd, setShowPwd] = useState(false);
+
+  async function handleSubmit(e) {
+    e.preventDefault();
+    if (loading) return;
+    setError('');
+    setLoading(true);
+    try {
+      const res = await fetch('/api/auth', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, password }),
+      });
+      if (res.ok) {
+        const { token } = await res.json();
+        localStorage.setItem(AUTH_KEY, token);
+        onLogin(token);
+      } else {
+        setError('Invalid username or password');
+      }
+    } catch {
+      setError('Connection error — please try again');
+    }
+    setLoading(false);
+  }
+
+  return (
+    <div style={{ minHeight: '100vh', background: '#f4f4f5', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
+      <div style={{ background: '#fff', border: '1px solid #e4e4e7', borderRadius: 20, padding: 32, width: '100%', maxWidth: 400, boxShadow: '0 20px 60px rgba(0,0,0,0.08)' }}>
+        <div style={{ textAlign: 'center', marginBottom: 28 }}>
+          <div style={{ fontSize: 40, marginBottom: 10 }}>🌾</div>
+          <div style={{ fontSize: 22, fontWeight: 800, color: '#111' }}>Farm Tracker</div>
+          <div style={{ fontSize: 13, color: '#71717a', marginTop: 4 }}>Sign in to continue</div>
+        </div>
+        <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+          <div>
+            <label style={{ display: 'block', color: '#71717a', fontSize: 13, marginBottom: 5, fontWeight: 600 }}>Username</label>
+            <input
+              autoFocus autoComplete="username" value={username}
+              onChange={e => setUsername(e.target.value)}
+              placeholder="admin"
+              style={{ width: '100%', padding: '10px 14px', borderRadius: 10, border: '1.5px solid #e4e4e7', background: '#fff', color: '#111', fontSize: 15, fontFamily: 'inherit', outline: 'none' }}
+            />
+          </div>
+          <div>
+            <label style={{ display: 'block', color: '#71717a', fontSize: 13, marginBottom: 5, fontWeight: 600 }}>Password</label>
+            <div style={{ position: 'relative' }}>
+              <input
+                type={showPwd ? 'text' : 'password'} autoComplete="current-password" value={password}
+                onChange={e => setPassword(e.target.value)}
+                placeholder="••••••••"
+                style={{ width: '100%', padding: '10px 44px 10px 14px', borderRadius: 10, border: '1.5px solid #e4e4e7', background: '#fff', color: '#111', fontSize: 15, fontFamily: 'inherit', outline: 'none' }}
+              />
+              <button type="button" onClick={() => setShowPwd(v => !v)}
+                style={{ position: 'absolute', right: 12, top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', fontSize: 16, color: '#a1a1aa', padding: 2 }}>
+                {showPwd ? '🙈' : '👁️'}
+              </button>
+            </div>
+          </div>
+          {error && <div style={{ fontSize: 13, color: '#dc2626', background: '#fee2e2', border: '1px solid #fecaca', borderRadius: 8, padding: '8px 12px' }}>{error}</div>}
+          <button type="submit" disabled={loading}
+            style={{ background: loading ? '#86efac' : '#16a34a', color: '#fff', border: 'none', borderRadius: 10, padding: '13px', fontWeight: 700, fontSize: 15, cursor: loading ? 'not-allowed' : 'pointer', fontFamily: 'inherit', marginTop: 4 }}>
+            {loading ? 'Signing in…' : 'Sign In'}
+          </button>
+        </form>
+      </div>
+    </div>
+  );
+}
+
 // ─── STORAGE ─────────────────────────────────────────────────────────────────
 // Dev: localStorage. Production (Vercel): Postgres via API.
 
@@ -31,16 +143,16 @@ const api = IS_DEV
       },
     }
   : {
-      getAll: () => fetch('/api/logs').then(r => r.json()),
-      create: (item) => fetch('/api/logs', {
+      getAll: () => authFetch('/api/logs').then(r => r.json()),
+      create: (item) => authFetch('/api/logs', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(item),
       }).then(r => r.json()),
-      update: (item) => fetch(`/api/logs/${item.id}`, {
+      update: (item) => authFetch(`/api/logs/${item.id}`, {
         method: 'PUT', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(item),
       }).then(r => r.json()),
-      remove: (id) => fetch(`/api/logs/${id}`, { method: 'DELETE' }),
+      remove: (id) => authFetch(`/api/logs/${id}`, { method: 'DELETE' }),
     };
 
 // ─── DATE HELPERS ────────────────────────────────────────────────────────────
@@ -683,6 +795,16 @@ function ReportsPage({ logs }) {
 const PAGE_SIZE = 10;
 
 export default function App() {
+  const [authToken, setAuthToken] = useState(() => getStoredToken());
+
+  if (!authToken) {
+    return <LoginPage onLogin={setAuthToken} />;
+  }
+
+  return <AuthenticatedApp onLogout={() => { localStorage.removeItem(AUTH_KEY); setAuthToken(null); }} />;
+}
+
+function AuthenticatedApp({ onLogout }) {
   const [logs, setLogs] = useState([]);
   const [loading, setLoading] = useState(true);
   const [activePage, setActivePage] = useState('tracker'); // 'tracker' | 'reports'
@@ -766,11 +888,24 @@ export default function App() {
           borderBottom: `1px solid ${T.border}`, marginBottom: 16,
         }}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12, gap: 8 }}>
-            <div style={{ minWidth: 0 }}>
-              <h1 style={{ fontSize: 20, fontWeight: 800, color: T.text, letterSpacing: -0.5, whiteSpace: 'nowrap' }}>
-                🌾 Farm Tracker
-              </h1>
-              <p style={{ color: T.textSub, fontSize: 11, marginTop: 2 }}>Labour & Payment Manager</p>
+            <div style={{ minWidth: 0, display: 'flex', alignItems: 'center', gap: 10 }}>
+              <div>
+                <h1 style={{ fontSize: 20, fontWeight: 800, color: T.text, letterSpacing: -0.5, whiteSpace: 'nowrap' }}>
+                  🌾 Farm Tracker
+                </h1>
+                <p style={{ color: T.textSub, fontSize: 11, marginTop: 2 }}>Labour & Payment Manager</p>
+              </div>
+              <button
+                onClick={onLogout}
+                title="Sign out"
+                style={{
+                  background: 'transparent', border: `1.5px solid ${T.border}`, borderRadius: 8,
+                  padding: '5px 9px', cursor: 'pointer', fontSize: 14, color: T.textMuted,
+                  fontFamily: 'inherit', flexShrink: 0,
+                }}
+              >
+                🔓
+              </button>
             </div>
             {activePage === 'tracker' && (
               <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
