@@ -97,16 +97,20 @@ function summaryByLabourer(subset) {
   const map = {};
   for (const log of subset) {
     if (!map[log.labourerName]) {
-      map[log.labourerName] = { name: log.labourerName, hours: 0, earned: 0, advance: 0 };
+      map[log.labourerName] = { name: log.labourerName, hours: 0, earned: 0, advance: 0, paid: 0 };
     }
     if (log.type === 'work') {
       map[log.labourerName].hours += log.hours || 0;
       map[log.labourerName].earned += log.amount || 0;
-    } else {
+    } else if (log.type === 'advance') {
       map[log.labourerName].advance += log.amount || 0;
+    } else if (log.type === 'payment') {
+      map[log.labourerName].paid += log.amount || 0;
     }
   }
-  return Object.values(map).sort((a, b) => a.name.localeCompare(b.name));
+  return Object.values(map)
+    .map(s => ({ ...s, pending: s.earned - s.advance - s.paid }))
+    .sort((a, b) => a.name.localeCompare(b.name));
 }
 
 // ─── THEME ───────────────────────────────────────────────────────────────────
@@ -124,6 +128,8 @@ const T = {
   amberBg:   '#fef3c7',
   red:       '#dc2626',
   redBg:     '#fee2e2',
+  teal:      '#0d9488',
+  tealBg:    '#ccfbf1',
 };
 
 const INPUT = {
@@ -166,6 +172,7 @@ function Modal({ initial, knownNames, onSave, onClose }) {
   const [amount, setAmount] = useState(initial?.amount != null ? String(initial.amount) : '');
   const [notes, setNotes] = useState(initial?.notes || '');
   const [error, setError] = useState('');
+  const [saving, setSaving] = useState(false);
 
   const isKnownName = knownNames.includes(labourerName);
 
@@ -176,19 +183,23 @@ function Modal({ initial, knownNames, onSave, onClose }) {
 
   function handleSubmit(e) {
     e.preventDefault();
+    if (saving) return;
     setError('');
     if (!labourerName.trim()) return setError('Labourer name is required.');
-    if (type === 'work' && (!hours || isNaN(hours) || Number(hours) <= 0))
+    if (type === 'work' && !multiDay && (!hours || isNaN(hours) || Number(hours) <= 0))
       return setError('Enter valid hours worked.');
     if (!amount || isNaN(amount) || Number(amount) < 0)
       return setError('Enter a valid amount.');
 
+    setSaving(true);
+
+    let payload;
     if (multiDay && !isEdit) {
-      if (!fromDate) return setError('From date is required.');
-      if (!toDate) return setError('To date is required.');
-      if (toDate < fromDate) return setError('End date must be on or after start date.');
+      if (!fromDate) { setSaving(false); return setError('From date is required.'); }
+      if (!toDate)   { setSaving(false); return setError('To date is required.'); }
+      if (toDate < fromDate) { setSaving(false); return setError('End date must be on or after start date.'); }
       const baseId = Date.now();
-      const entries = selectedDays.map((d, i) => ({
+      payload = selectedDays.map((d, i) => ({
         id: `${baseId}_${i}`,
         type,
         labourerName: labourerName.trim(),
@@ -198,10 +209,9 @@ function Modal({ initial, knownNames, onSave, onClose }) {
         notes: notes.trim(),
         createdAt: new Date().toISOString(),
       }));
-      onSave(entries);
     } else {
-      if (!date) return setError('Date is required.');
-      onSave({
+      if (!date) { setSaving(false); return setError('Date is required.'); }
+      payload = {
         ...(initial || {}),
         id: initial?.id || Date.now().toString(),
         type,
@@ -211,8 +221,13 @@ function Modal({ initial, knownNames, onSave, onClose }) {
         amount: Number(amount),
         notes: notes.trim(),
         createdAt: initial?.createdAt || new Date().toISOString(),
-      });
+      };
     }
+
+    Promise.resolve(onSave(payload)).catch(() => {
+      setSaving(false);
+      setError('Failed to save. Please try again.');
+    });
   }
 
   const accent   = type === 'work' ? T.green : T.amber;
@@ -242,12 +257,13 @@ function Modal({ initial, knownNames, onSave, onClose }) {
           {[
             { key: 'work',    label: '⛏ Work',    bg: T.greenBg, color: T.green },
             { key: 'advance', label: '💰 Advance', bg: T.amberBg, color: T.amber },
+            { key: 'payment', label: '💳 Paid',    bg: T.tealBg,  color: T.teal  },
           ].map(({ key, label, bg, color }) => (
             <button
               key={key} type="button" onClick={() => setType(key)}
               style={{
                 flex: 1, padding: '9px 0', borderRadius: 10, cursor: 'pointer',
-                fontFamily: 'inherit', fontSize: 14, fontWeight: 700,
+                fontFamily: 'inherit', fontSize: 13, fontWeight: 700,
                 border: type === key ? `2px solid ${color}` : `1.5px solid ${T.border}`,
                 background: type === key ? bg : T.surface,
                 color: type === key ? color : T.textMuted,
@@ -356,6 +372,7 @@ function Modal({ initial, knownNames, onSave, onClose }) {
             {type === 'work' && (
               <div>
                 <label style={LABEL}>Hours Worked{multiDay && !isEdit ? ' (per day)' : ''}</label>
+
                 <input
                   type="number" min="0" max="24" step="0.5" style={INPUT}
                   value={hours} placeholder="e.g. 8"
@@ -368,7 +385,9 @@ function Modal({ initial, knownNames, onSave, onClose }) {
               <label style={LABEL}>
                 {type === 'work'
                   ? `Payment Amount (₹)${multiDay && !isEdit ? ' per day' : ''}`
-                  : 'Advance Amount (₹)'}
+                  : type === 'advance'
+                  ? 'Advance Amount (₹)'
+                  : 'Amount Paid (₹)'}
               </label>
               <input
                 type="number" min="0" style={INPUT}
@@ -403,13 +422,17 @@ function Modal({ initial, knownNames, onSave, onClose }) {
             </button>
             <button
               type="submit"
+              disabled={saving}
               style={{
                 flex: 2, padding: '11px 0', borderRadius: 10, border: 'none',
                 background: accentBg, color: accent,
-                fontFamily: 'inherit', fontSize: 15, fontWeight: 700, cursor: 'pointer',
+                fontFamily: 'inherit', fontSize: 15, fontWeight: 700,
+                cursor: saving ? 'not-allowed' : 'pointer',
+                opacity: saving ? 0.6 : 1,
+                transition: 'opacity 0.15s',
               }}
             >
-              {isEdit ? 'Save Changes' : multiDay && dayCount > 1 ? `Add ${dayCount} Entries` : 'Add Entry'}
+              {saving ? 'Saving…' : isEdit ? 'Save Changes' : multiDay && dayCount > 1 ? `Add ${dayCount} Entries` : 'Add Entry'}
             </button>
           </div>
         </form>
@@ -421,38 +444,44 @@ function Modal({ initial, knownNames, onSave, onClose }) {
 // ─── LOG CARD ────────────────────────────────────────────────────────────────
 
 function LogCard({ log, onEdit, onDelete }) {
-  const isWork = log.type === 'work';
-  const color  = isWork ? T.green : T.amber;
-  const iconBg = isWork ? T.greenBg : T.amberBg;
+  const isWork    = log.type === 'work';
+  const isPayment = log.type === 'payment';
+  const color  = isWork ? T.green : isPayment ? T.teal : T.amber;
+  const iconBg = isWork ? T.greenBg : isPayment ? T.tealBg : T.amberBg;
+  const icon   = isWork ? '⛏' : isPayment ? '💳' : '💰';
+  const subtitle = isWork
+    ? `${log.hours}h worked`
+    : isPayment
+    ? 'Payment settled'
+    : 'Advance taken';
 
   return (
     <div className="row" style={{
-      background: T.surface, borderRadius: 12, padding: '12px 14px',
-      border: `1.5px solid ${T.border}`, display: 'flex', alignItems: 'center', gap: 12,
+      background: T.surface, borderRadius: 12, padding: '11px 12px',
+      border: `1.5px solid ${T.border}`, display: 'flex', alignItems: 'center', gap: 10,
     }}>
       <div style={{
-        width: 38, height: 38, borderRadius: 10, flexShrink: 0, background: iconBg,
-        display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18,
+        width: 36, height: 36, borderRadius: 10, flexShrink: 0, background: iconBg,
+        display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 17,
       }}>
-        {isWork ? '⛏' : '💰'}
+        {icon}
       </div>
       <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ fontWeight: 700, color: T.text, fontSize: 15 }}>{log.labourerName}</div>
-        <div style={{ color: T.textSub, fontSize: 13, marginTop: 2 }}>
-          {isWork ? `${log.hours}h worked` : 'Advance taken'}
-          {log.notes ? ` · ${log.notes}` : ''}
+        <div style={{ fontWeight: 700, color: T.text, fontSize: 14 }}>{log.labourerName}</div>
+        <div style={{ color: T.textSub, fontSize: 12, marginTop: 1 }}>
+          {subtitle}{log.notes ? ` · ${log.notes}` : ''}
         </div>
       </div>
-      <div style={{ fontWeight: 700, fontSize: 15, color, flexShrink: 0 }}>
+      <div style={{ fontWeight: 700, fontSize: 14, color, flexShrink: 0 }}>
         ₹{log.amount.toLocaleString('en-IN')}
       </div>
-      <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
+      <div style={{ display: 'flex', gap: 5, flexShrink: 0 }}>
         <button
           onClick={() => onEdit(log)}
           style={{
-            padding: '5px 10px', borderRadius: 8, border: `1.5px solid ${T.border}`,
+            padding: '4px 8px', borderRadius: 7, border: `1.5px solid ${T.border}`,
             background: 'transparent', color: T.textSub, cursor: 'pointer',
-            fontFamily: 'inherit', fontSize: 13,
+            fontFamily: 'inherit', fontSize: 12,
           }}
         >
           Edit
@@ -460,9 +489,9 @@ function LogCard({ log, onEdit, onDelete }) {
         <button
           onClick={() => onDelete(log.id)}
           style={{
-            padding: '5px 8px', borderRadius: 8, border: `1.5px solid #fecaca`,
+            padding: '4px 7px', borderRadius: 7, border: `1.5px solid #fecaca`,
             background: 'transparent', color: T.red, cursor: 'pointer',
-            fontFamily: 'inherit', fontSize: 13,
+            fontFamily: 'inherit', fontSize: 12,
           }}
         >
           ✕
@@ -475,8 +504,11 @@ function LogCard({ log, onEdit, onDelete }) {
 // ─── SUMMARY CARD ────────────────────────────────────────────────────────────
 
 function SummaryCard({ s }) {
-  const net = s.earned - s.advance;
-  const pos = net >= 0;
+  const pending = s.pending ?? (s.earned - s.advance);
+  const pendingColor = pending <= 0 ? T.green : T.red;
+  const pendingBg    = pending <= 0 ? T.greenBg : T.redBg;
+  const pendingLabel = pending <= 0 ? 'Settled' : `Due ₹${pending.toLocaleString('en-IN')}`;
+
   return (
     <div style={{
       background: T.surface, borderRadius: 14, padding: '14px 16px', border: `1px solid ${T.border}`,
@@ -484,16 +516,19 @@ function SummaryCard({ s }) {
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
         <div style={{ fontWeight: 700, fontSize: 16, color: T.text }}>{s.name}</div>
         <div style={{
-          padding: '4px 12px', borderRadius: 8, fontWeight: 700, fontSize: 14,
-          background: pos ? T.greenBg : T.redBg, color: pos ? T.green : T.red,
+          padding: '4px 10px', borderRadius: 8, fontWeight: 700, fontSize: 13,
+          background: pendingBg, color: pendingColor,
         }}>
-          Net ₹{net.toLocaleString('en-IN')}
+          {pendingLabel}
         </div>
       </div>
-      <div style={{ display: 'flex', gap: 8 }}>
+      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
         <StatBox label="HOURS"   value={`${s.hours}h`}                           color={T.text} />
         <StatBox label="EARNED"  value={`₹${s.earned.toLocaleString('en-IN')}`}  color={T.green} />
         <StatBox label="ADVANCE" value={`₹${s.advance.toLocaleString('en-IN')}`} color={T.amber} />
+        {s.paid > 0 && (
+          <StatBox label="PAID" value={`₹${s.paid.toLocaleString('en-IN')}`} color={T.teal} />
+        )}
       </div>
     </div>
   );
@@ -730,21 +765,21 @@ export default function App() {
           background: T.bg, zIndex: 20,
           borderBottom: `1px solid ${T.border}`, marginBottom: 16,
         }}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
-            <div>
-              <h1 style={{ fontSize: 21, fontWeight: 800, color: T.text, letterSpacing: -0.5 }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12, gap: 8 }}>
+            <div style={{ minWidth: 0 }}>
+              <h1 style={{ fontSize: 20, fontWeight: 800, color: T.text, letterSpacing: -0.5, whiteSpace: 'nowrap' }}>
                 🌾 Farm Tracker
               </h1>
-              <p style={{ color: T.textSub, fontSize: 12, marginTop: 2 }}>Labour & Payment Manager</p>
+              <p style={{ color: T.textSub, fontSize: 11, marginTop: 2 }}>Labour & Payment Manager</p>
             </div>
             {activePage === 'tracker' && (
-              <div style={{ display: 'flex', gap: 8 }}>
+              <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
                 <button
                   onClick={() => openAdd('work')}
                   style={{
-                    padding: '8px 14px', borderRadius: 10, cursor: 'pointer',
+                    padding: '8px 10px', borderRadius: 10, cursor: 'pointer',
                     border: `2px solid ${T.green}`, background: T.greenBg, color: T.green,
-                    fontWeight: 700, fontFamily: 'inherit', fontSize: 14,
+                    fontWeight: 700, fontFamily: 'inherit', fontSize: 13, whiteSpace: 'nowrap',
                   }}
                 >
                   + Work
@@ -752,12 +787,22 @@ export default function App() {
                 <button
                   onClick={() => openAdd('advance')}
                   style={{
-                    padding: '8px 14px', borderRadius: 10, cursor: 'pointer',
+                    padding: '8px 10px', borderRadius: 10, cursor: 'pointer',
                     border: `2px solid ${T.amber}`, background: T.amberBg, color: T.amber,
-                    fontWeight: 700, fontFamily: 'inherit', fontSize: 14,
+                    fontWeight: 700, fontFamily: 'inherit', fontSize: 13, whiteSpace: 'nowrap',
                   }}
                 >
                   + Advance
+                </button>
+                <button
+                  onClick={() => openAdd('payment')}
+                  style={{
+                    padding: '8px 10px', borderRadius: 10, cursor: 'pointer',
+                    border: `2px solid ${T.teal}`, background: T.tealBg, color: T.teal,
+                    fontWeight: 700, fontFamily: 'inherit', fontSize: 13, whiteSpace: 'nowrap',
+                  }}
+                >
+                  + Paid
                 </button>
               </div>
             )}
